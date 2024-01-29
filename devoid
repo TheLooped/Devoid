@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+# Created by TheLooped
+# Description: A post installation script for Void Linux
+
+# Enable strict mode
+set -euo pipefail
+
+
+# Variables
+version="0.0.1"
+
+# Helper Functions
+
+# Color
+color() {
+    case "$1" in
+        red) code="\033[31m";;
+        yellow) code="\033[33m";;
+        green) code="\033[32m";;
+        blue) code="\033[34m";;
+        cyan) code="\033[36m";;
+        reset) code="\033[0m";;
+        *) code="";;
+    esac
+
+    echo -en "$code"
+}
+
+# Handle Error
+error_handler() {
+    local script_name=$(basename "$0")
+    local line_number=$1
+    local error_message=$2
+
+    echo -e "$(color red)Error in ${script_name} at line ${line_number}: ${error_message}$(color reset)" >&2
+
+    local exit_code=$?
+    if [ -n "$exit_code" ]; then
+        echo -e "$(color red)Command failed with exit code ${exit_code}$(color reset)" >&2
+    fi
+
+    exit ${exit_code:-1}
+}
+
+print_message() {
+    local message="$1"
+    local color="$2"
+    local reset=$(color reset)
+
+    echo -e "${reset}$(color "$color")${message}${reset}"
+}
+
+run() {
+    local command="$@"  
+    if [ $(id -u) -ne 0 ]; then
+        sudo bash -c "${command}"
+    else
+        eval "${command}"
+    fi
+}
+
+# Functions
+
+# Base Setup
+base() {
+    print_message "$(figlet -f slant Base Setup)" green
+
+    print_message "Updating System" blue
+    run xbps-install -Suvy
+}
+
+# Setup Mirrors
+setup_mirrors() {
+    print_message "Setting up mirrors" blue
+
+    if [ ! -d /etc/xbps.d ]; then
+        run mkdir -p /etc/xbps.d
+    else
+    run ' cat << EOF > /etc/xbps.d/main-repo.conf
+    repository=https://repo-default.voidlinux.org/current
+    repository=https://repo-default.voidlinux.org/current/nonfree
+    repository=https://repo-fastly.voidlinux.org/current
+    repository=https://repo-fastly.voidlinux.org/current/nonfree
+EOF'
+    fi
+}
+
+# Base pkgs
+base_pkgs() {
+    print_message "Installing base packages" blue
+
+    local pkgs= ${pkgs[@]}
+
+    for pkg in "${pkgs[@]}"; do
+        run xbps-install -y $pkg
+    done
+}
+
+# start services
+start_services() {
+    print_message "Starting services" blue
+
+    local services= ${services[@]}
+
+    for service in "${services[@]}"; do
+        run ln -s /etc/sv/$service /var/service
+    done
+}
+
+
+# network
+setup_network() {
+    print_message "Setting up network" blue
+
+    run xbps-install -S NetworkManager iwd
+    if [ ! -d /etc/iwd ]; then
+        run mkdir -p /etc/iwd
+    else
+        run ' cat << EOF > /etc/iwd/main.conf
+        [General]
+        EnableNetworkConfiguration=true
+EOF'
+    fi
+
+    if  [ ! -d /etc/NetworkManager/conf.d ]; then
+        run mkdir -p /etc/NetworkManager/conf.d
+    else
+        run ' cat << EOF > /etc/NetworkManager/conf.d/nm.conf
+        [device]
+        wifi.backend=iwd
+        wifi.iwd.autoconnect=yes
+
+        [main]
+        iwd-config-path=auto
+EOF'
+    fi
+}
+
+# audio
+setup_audio(){
+    print_message "Setting up audio" blue
+    run xbps-install -y pipewire alsa-pipewire wireplumber pipewire-devel
+    if [ ! -d /etc/pipewire/pipewire.conf.d ]; then
+    run mkdir -p /etc/pipewire/pipewire.conf.d
+    fi
+    run ln -s /usr/share/examples/wireplumber/10-wireplumber.conf /etc/pipewire/pipewire.conf.d/
+    run ln -s /usr/share/examples/pipewire/20-pipewire-pulse.conf /etc/pipewire/pipewire.conf.d/
+
+    if [ ! -d /etc/alsa/conf.d ]; then
+    run mkdir -p /etc/alsa/conf.d
+    fi
+    run ln -s /usr/share/alsa/alsa.conf.d/50-pipewire.conf /etc/alsa/conf.d
+    run ln -s /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf /etc/alsa/conf.d
+}
+
+# utils
+setup_utils() {
+    print_message "Setting up utils" blue
+}
+# graphical 
+# multimedia
+# office
+# security
+# system
+
+# Main
+main() {
+    base
+    setup_mirrors
+    setup_network
+}
+
+# Run the main function
+main "$@"
