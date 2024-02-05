@@ -9,10 +9,13 @@ set -euo pipefail
 
 # Variables
 version="0.0.1"
+get_deps_complete=false
+greet_complete=false
 
 # Helper Functions
 
-# Color
+
+# Color codes
 color() {
     case "$1" in
         red) code="\033[31m";;
@@ -25,6 +28,11 @@ color() {
     esac
 
     echo -en "$code"
+}
+
+# Print message
+print_message() {
+    echo -e "$1"
 }
 
 # Handle Error
@@ -43,13 +51,8 @@ error_handler() {
     exit ${exit_code:-1}
 }
 
-print_message() {
-    local message="$1"
-    local color="$2"
-    local reset=$(color reset)
-
-    echo -e "${reset}$(color "$color")${message}${reset}"
-}
+# Set up error trap
+trap 'error_handler ${LINENO} "$BASH_COMMAND"' ERR
 
 run() {
     local command="$@"  
@@ -60,81 +63,262 @@ run() {
     fi
 }
 
-# Functions
-
-# Base Setup
-base() {
-    print_message "$(figlet -f slant Base Setup)" green
-
-    print_message "Updating System" blue
-    run xbps-install -Suvy
+setup_services () {
+    local svs=(
+    NetworkManager
+    acpid
+    bluetooth
+    dbus
+    elogind
+    gdm
+    iwd
+    lightdm
+    polkitd
+    sddm
+    sshd
+    tlp
+)
+for i in $svs; do
+    print_message "$(color blue)Enabling service \"$i\"... "
+    run ln -s /etc/sv/"$i" /var/service > /dev/null 2>&1
+    if [ ! $? -eq 0 ]; then
+        echo "Service $i $(color red)not enabled$(color reset)"
+        error_svs=$error_svs"$i "
+    else
+        print_message "$(color green)enabled$(color reset)"
+    fi
+done
 }
 
-# Setup Mirrors
-setup_mirrors() {
-    print_message "Setting up mirrors" blue
+# Print greeting
+greet() {
+    print_message "$(color green)\n$(figlet -f slant DeVoid)$(color reset)"
+    print_message "$(color blue)Version:$(color reset) $version"
+    print_message "$(color blue)Description:$(color reset) Post install script for Void Linux\n"
 
+    greet_complete=true
+    printf "\n"
+    read -rp "Press enter to continue"
+    clear
+}
+
+
+# Check required dependencies
+check_dependencies() {
+    print_message "$(color yellow)\nChecking dependencies...$(color reset)\n"
+
+    missing_packages=()
+
+    for pkg in figlet git curl; do
+        if ! command -v "${pkg}" >/dev/null 2>&1; then
+            missing_packages+=("$pkg") 
+        fi
+    done
+
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        print_message "$(color green)Installing missing packages: ${missing_packages[*]}$(color reset)"
+
+    # Install missing packages
+    sudo xbps-install -S -y "${missing_packages[@]}"
+
+    # Check return code
+    if [ $? -ne 0 ]; then
+        error_handler ${LINENO} "Error installing ${missing_packages[*]}" 
+    fi
+    fi
+
+    get_deps_complete=true
+
+    clear
+}
+
+proceed() {
+    local function="$1"
+
+    while true; do
+        read -rp "$(color green)Proceed with \"$function\"? [Y/n] $(color reset)" ans
+
+        case "$ans" in
+            [Yy]*)
+                "$function"
+                break
+                ;;
+            [Nn]*)
+                # Print a brief explanation to indicate skipping
+                print_message "$(color yellow)Skipping \"$function\"..." "$(color reset)"
+                break
+                ;;
+            *)
+                print_message "$(color red)Invalid input. Please enter Y or n$(color reset)"
+                ;;
+        esac
+    done
+}
+
+
+update_system() {
+    print_message "$(color cyan)Updating system...\n$(color reset)"
+    run xbps-install -Suvy 
+    clear
+}
+
+setup_mirrors() {
+    print_message "$(color cyan)Setting up mirrors\n$(color reset)"
     if [ ! -d /etc/xbps.d ]; then
         run mkdir -p /etc/xbps.d
-    else
-    run ' cat << EOF > /etc/xbps.d/main-repo.conf
-    repository=https://repo-default.voidlinux.org/current
-    repository=https://repo-default.voidlinux.org/current/nonfree
-    repository=https://repo-fastly.voidlinux.org/current
-    repository=https://repo-fastly.voidlinux.org/current/nonfree
-EOF'
+        if [ ! -f /etc/xbps.d/main.conf ]; then
+            run cp ./res/xbps.d/main.conf /etc/xbps.d
+        fi
     fi
+    print_message "$(color green)Mirrors set$(color reset)"
+
+    print_message "$(color cyan)Installing repo \n$(color reset)"
+    run xbps-install -Suvy void-repo-nonfree void-repo-multilib-nonfree
+    clear
 }
-
-# Base pkgs
-base_pkgs() {
-    print_message "Installing base packages" blue
-
-    local pkgs= ${pkgs[@]}
-
-    for pkg in "${pkgs[@]}"; do
-        run xbps-install -y $pkg
-    done
-}
-
-# start services
-start_services() {
-    print_message "Starting services" blue
-
-    local services= ${services[@]}
-
-    for service in "${services[@]}"; do
-        run ln -s /etc/sv/$service /var/service
-    done
-}
-
 
 # network
 setup_network() {
-    print_message "Setting up network" blue
+    print_message "$(color cyan) Setting up network"
 
     run xbps-install -S NetworkManager iwd
     if [ ! -d /etc/iwd ]; then
         run mkdir -p /etc/iwd
-    else
-        run ' cat << EOF > /etc/iwd/main.conf
-        [General]
-        EnableNetworkConfiguration=true
-EOF'
+        if [ ! -f /etc/iwd/main.conf ]; then
+            run cp ./res/iwd/main.conf /etc/iwd
+        fi
     fi
 
     if  [ ! -d /etc/NetworkManager/conf.d ]; then
         run mkdir -p /etc/NetworkManager/conf.d
-    else
-        run ' cat << EOF > /etc/NetworkManager/conf.d/nm.conf
-        [device]
-        wifi.backend=iwd
-        wifi.iwd.autoconnect=yes
-
-        [main]
-        iwd-config-path=auto
-EOF'
+        if [ ! -f /etc/NetworkManager/conf.d/main.conf ]; then
+            run cp ./res/NetworkManager/main.conf /etc/NetworkManager/conf.d
+        fi
     fi
+
+    clear
+}
+
+setup_xorg() {
+    print_message "$(color cyan)Setting up Xorg\n$(color reset)"
+
+    local xpkgs=(
+    libX11-devel
+    libXft-devel 
+    libXinerama-devel
+    fontconfig-devel
+    libXext-devel
+    freetype-devel
+    libxcb-devel
+    xcb-proto
+    xcb-util-devel
+    xcb-util-wm-devel
+    xcb-util-cursor-devel
+    xcb-util-keysyms-devel
+    xorg-minimal
+    xorg-fonts
+    xf86-input-evdev
+    xf86-video-intel
+    setxkbmap
+    xauth
+    xclipboard
+    xclip
+    xsel
+    xev
+    xgamma
+    xinit
+    xinput
+    xprop
+    xrandr
+    xwininfo
+)
+for pkg in "${xpkgs[@]}"; do
+    run xbps-install -y "$pkg"
+done
+clear
+}
+
+setup_essentials() {
+    print_message "$(color cyan)Setting up essentials\n$(color reset)"
+    local epkgs=(
+    base-devel
+    elogind
+    polkit-devel
+    man-pages
+    dbus-devel
+    dbus-glib-devel
+)
+for pkg in "${epkgs[@]}"; do
+    run xbps-install -y "$pkg"
+done
+}
+
+setup_devtools(){
+    print_message "$(color cyan)Setting up development tools\n$(color reset)"
+    local dpkgs=(git make gcc llvm clang cmake ninja autoconf automake bison m4 make libtool flex meson ninja optipng sassc)
+    for pkg in "${dpkgs[@]}"; do
+        run xbps-install -y "$pkg"
+    done
+}
+
+setup_fonts() {
+    print_message "$(color cyan)Setting up fonts\n$(color reset)"
+    run xbps-install -y noto-fonts-ttf noto-fonts-cjk noto-fonts-emoji
+    ln -s ~/.ddotfiles/.fonts "$HOME/.local/share/fonts"
+    fc-cache -f -v
+    print_message "$(color green)Fonts installed$(color reset)"
+    clear
+}
+
+setup_shell() {
+    print_message "$(color cyan)Setting up shell\n$(color reset)"
+
+    run xbps-install -y zsh zsh-completions zsh-syntax-highlighting zsh-autosuggestions zsh-history-substring-search
+
+    run usermod -s /usr/bin/zsh "$USER"
+
+    if [ ! -d "$HOME/.oh-my-zsh" ]; then
+        curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh | sh
+    fi
+
+    print_message "$(color green)Shell installed$(color reset)"
+    clear
+}
+
+setup_drivers() {
+    print_message "$(color cyan)Setting up drivers\n$(color reset)"
+    read -rp "Which driver do you want to use? (amd/intel): " driver
+    local ipkgs=(
+    linux-firmware-intel
+    mesa-dri
+    vulkan-loader
+    mesa-vulkan-intel
+    intel-video-accel
+    intel-ucode
+    intel-media-driver
+)
+local apkgs=(
+vulkan-loader
+linux-firmware-amd
+mesa-dri
+mesa-vulkan-radeon
+amdvlk
+xf86-video-amdgpu
+xf86-video-ati
+mesa-vaapi
+mesa-vdpau
+)
+
+if [ "$driver" = "amd" ]; then
+    for pkg in "${apkgs[@]}"; do
+        run xbps-install -y "$pkg"
+    done
+elif [ "$driver" = "intel" ]; then
+    for pkg in "${ipkgs[@]}"; do
+        run xbps-install -y "$pkg"
+    done
+fi
+clear
 }
 
 # audio
@@ -142,34 +326,241 @@ setup_audio(){
     print_message "Setting up audio" blue
     run xbps-install -y pipewire alsa-pipewire wireplumber pipewire-devel
     if [ ! -d /etc/pipewire/pipewire.conf.d ]; then
-    run mkdir -p /etc/pipewire/pipewire.conf.d
+        run mkdir -p /etc/pipewire/pipewire.conf.d
     fi
-    run ln -s /usr/share/examples/wireplumber/10-wireplumber.conf /etc/pipewire/pipewire.conf.d/
-    run ln -s /usr/share/examples/pipewire/20-pipewire-pulse.conf /etc/pipewire/pipewire.conf.d/
+    if [ ! -f /etc/pipewire/pipewire.conf.d/10-wireplumber.conf ]; then
+        run ln -s /usr/share/examples/wireplumber/10-wireplumber.conf /etc/pipewire/pipewire.conf.d/
+        run ln -s /usr/share/examples/pipewire/20-pipewire-pulse.conf /etc/pipewire/pipewire.conf.d/
+    fi
 
     if [ ! -d /etc/alsa/conf.d ]; then
-    run mkdir -p /etc/alsa/conf.d
+        run mkdir -p /etc/alsa/conf.d
     fi
-    run ln -s /usr/share/alsa/alsa.conf.d/50-pipewire.conf /etc/alsa/conf.d
-    run ln -s /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf /etc/alsa/conf.d
+    if [ ! -f /etc/alsa/conf.d/50-pipewire.conf ]; then
+        run ln -s /usr/share/alsa/alsa.conf.d/50-pipewire.conf /etc/alsa/conf.d
+        run ln -s /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf /etc/alsa/conf.d
+    fi
+    clear
 }
 
-# utils
-setup_utils() {
-    print_message "Setting up utils" blue
+setup_bluetooth() {
+    print_message "$(color cyan)Setting up bluetooth\n$(color reset)"
+    run xbps-install -y bluez libspa-bluetooth
+    if [ ! -d /etc/bluetooth ]; then
+        run mkdir -p /etc/bluetooth
+    fi
+    if [ ! -f /etc/bluetooth/main.conf ]; then
+        run ln -s /usr/share/doc/bluez/main.conf /etc/bluetooth/
+    fi
+    print_message "$(color green)Bluetooth enabled$(color reset)"
+    clear
 }
-# graphical 
-# multimedia
-# office
-# security
-# system
 
-# Main
+setup_input(){
+    print_message "$(color cyan)Setting up input\n$(color reset)"
+    run xbps-install -Suvy    xf86-input-evdev-devel xf86-input-libinput-devel
+    if [ ! -d /etc/X11/xorg.conf.d ]; then
+        run mkdir -p /etc/X11/xorg.conf.d
+    fi
+    if [ ! -f /etc/X11/xorg.conf.d/30-touchpad.conf ]; then
+        run cp ./res/X11/30-touchpad.conf /etc/X11/xorg.conf.d
+    fi
+    clear
+}
+
+setup_de_wm(){
+
+    print_message "$(color cyan)Setting up window manager\\n$(color reset)"
+
+    local wmpkgs=(awesome dwm dk i3)
+    local depkgs=(kde lxqt xfce4 gnome)
+
+    while true; do
+        read -rp "Do you want to use a window manager or desktop environment? (wm/de): " ans
+        case $ans in
+            wm)
+                print_message "Window managers: ${wmpkgs[*]}"
+                read -rp "Which window manager do you want to use? " wm
+                if [[ " ${wmpkgs[@]} " =~ "$wm" ]]; then
+                    run xbps-install -y "$wm"
+                    case $wm in
+                        dk)
+                            run xbps-install sxhkd
+                            break ;;
+                    esac
+                    print_message "$(color green)$wm installed successfully!$(color reset)"
+                    return
+                else
+                    print_message "$(color red)Invalid WM selected.$(color reset)"
+                fi
+                ;;
+            de)
+                print_message "Desktop environments: ${depkgs[*]}" 
+                read -rp "Which desktop environment do you want to use? " de
+                if [[ " ${depkgs[@]} " =~ " $de " ]]; then
+                    run xbps-install -y "$de"
+                    print_message "$(color green)$de installed successfully!$(color reset)"
+                    return
+                else
+                    print_message "$(color red)Invalid DE selected.$(color reset)"
+                fi
+                ;;
+            *)
+                print_message "$(color red)Invalid input. Please enter wm or de$(color reset)"
+                ;;
+        esac
+    done
+
+    print_message "$(color green)Window manager enabled$(color reset)"
+    clear
+}
+
+setup_utils(){
+    print_message "$(color cyan)Setting up utilities\n$(color reset)"
+
+    read -rp "$(color yellow)Do you want to setup Power Saving?$(color reset)" pow
+
+    if [ "$pow" = "y" ]; then
+        run xbps-install -y powertop tlp
+    else
+        print_message "$(color green)Skipping Power Saving$(color reset)"
+    fi 
+
+    #TODO Add some more
+
+    print_message "$(color green)Utilities enabled$(color reset)"
+    clear
+
+    print_message "$(color green)Utilities setup completed!$(color reset)"
+}
+
+setup_apps() {
+
+    print_message "$(color yellow)Setting up applications$(color reset)\n"
+
+    local terminals=("alacritty" "kitty" "rio" "st" "urxvt" "wezterm" "xterm")
+    local browsers=("brave" "chromium" "firefox" "floorp" "qutebrowser" "vivaldi")
+    local file_managers=("dolphin" "pcmanfm" "thunar" "nemo" "sigma") 
+    local text_editors=("leafpad" "mousepad" "featherpad" "vim" "neovim" "nano" "micro" "vscode")
+    local misc=("rofi" "lxappearance" "picom" "compfy" "dunst")
+
+    local group_names=("Terminals" "Browsers" "File Managers" "Text Editors" "Miscellaneous")
+    local groups=("${terminals[*]}" "${browsers[*]}" "${file_managers[*]}" "${text_editors[*]}" "${misc[*]}")
+
+    for i in ${!group_names[@]}; do
+        echo "${group_names[$i]}: ${groups[$i]}"
+
+        read -p "Which packages would you like to install? (Separate with spaces) " choices
+
+        if [[ -n $choices ]]; then
+            IFS=' ' read -ra selected <<< "$choices"
+
+            for choice in "${selected[@]}"; do
+                if [[ " ${groups[$i]} " =~ " $choice " ]]; then
+                    run xbps-install -y "$choice"
+                    print_message "$(color green)$choice installed successfully!$(color reset)"
+                else
+                    print_message "$(color red)Invalid package '$choice' selected.$(color reset)"
+                fi
+            done
+        else
+            print_message "$(color red)No packages selected.$(color reset)"
+        fi
+    done
+
+    print_message "$(color green)Applications setup completed!$(color reset)"
+}
+
+setup_displaymanager(){
+    print_message "$(color cyan)setting up display manager\n$(color reset)"
+
+    local dmpkgs=(lightdm lightdm-gtk-greeter sddm gdm)
+    for pkg in "${dmpkgs[@]}"; do
+        read -rp "do you want to use $pkg? [y/n] " ans
+        case $ans in
+            [yY]* )
+                run xbps-install -y "$pkg"
+                break ;;
+            [nN]* ) setup_displaymanager
+                break ;;
+            * )
+                print_message "$(color red)invalid input. please enter y or n$(color reset)"
+                ;;
+        esac 
+    done
+
+    case $pkg in
+        lightdm)
+            if [ ! -d /etc/lightdm ]; then
+                run mkdir -p /etc/lightdm
+            fi
+            if [ ! -f /etc/lightdm/lightdm.conf ]; then
+                run ln -s /usr/share/examples/lightdm/lightdm.conf /etc/lightdm
+            fi
+            ;;
+        sddm)
+            if [ ! -d /etc/sddm ]; then
+                run mkdir -p /etc/sddm
+            fi
+            if [ ! -f /etc/sddm.conf ]; then
+                run ln -s /usr/share/sddm/sddm.conf /etc
+            fi
+            if [ ! -f /etc/sddm.conf.d/default.conf ]; then
+                run ln -s /usr/share/sddm/sddm.conf.d/default.conf /etc/sddm.conf.d
+            fi
+            ;;
+        gdm)
+            if [ ! -d /etc/gdm ]; then
+                run mkdir -p /etc/gdm
+            fi
+            if [ ! -f /etc/gdm/custom.conf ]; then
+                run ln -s /usr/share/gdm/custom.conf /etc/gdm
+            fi
+            if [ ! -f /etc/gdm/gdm.conf ]; then
+                run ln -s /usr/share/gdm/gdm.conf /etc       
+            fi
+            if [ ! -f /etc/gdm/gdm-tweaks.conf ]; then
+                run ln -s /usr/share/gdm/gdm-tweaks.conf /etc
+            fi
+            if [ ! -f /etc/gdm/xsession ]; then
+                run ln -s /usr/share/gdm/xsession /etc/gdm
+            fi
+            ;;
+    esac
+
+    print_message "$(color green)display manager enabled$(color reset)"
+    clear
+}
+
+retrieve_dots() {
+    if [ ! -d ~/.dotfiles ]; then
+        git clone https://github.com/TheLooped/dotfiles.git ~/.dotfiles
+    fi
+}
+# main
+
 main() {
-    base
-    setup_mirrors
-    setup_network
+    if [ "$get_deps_complete" = false ]; then
+        check_dependencies
+    fi
+    greet
+    proceed setup_mirrors
+    proceed setup_network
+    proceed update_system
+    proceed setup_xorg
+    proceed setup_audio
+    proceed setup_bluetooth
+    proceed setup_input
+    proceed setup_de_wm
+    proceed setup_displaymanager
+    proceed setup_devtools
+    proceed setup_essentials
+    proceed setup_shell
+    proceed retrieve_dots
+    proceed setup_fonts
+    proceed setup_apps
+    proceed setup_services
+    proceed setup_utils
 }
-
-# Run the main function
 main "$@"
+
