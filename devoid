@@ -440,7 +440,7 @@ setup_apps() {
 
     local terminals=("alacritty" "kitty" "rio" "st" "urxvt" "wezterm" "xterm")
     local browsers=("brave" "chromium" "firefox" "floorp" "qutebrowser" "vivaldi")
-    local file_managers=("dolphin" "pcmanfm" "thunar" "nemo" "sigma") 
+    local file_managers=("dolphin" "pcmanfm" "thunar" "nemo") 
     local text_editors=("leafpad" "mousepad" "featherpad" "vim" "neovim" "nano" "micro" "vscode")
     local misc=("rofi" "lxappearance" "picom" "compfy" "dunst")
 
@@ -459,6 +459,21 @@ setup_apps() {
                 if [[ " ${groups[$i]} " =~ " $choice " ]]; then
                     run xbps-install -y "$choice"
                     print_message "$(color green)$choice installed successfully!$(color reset)"
+
+                    if [ "$choice" = "brave" ]; then
+                        run xbps-install -y brave-bin
+                        git clone https://github.com/soanvig/brave-bin
+                        mkdir -p brave-bin ~/.local/share/pkgs
+                        cp -r brave-bin/template ~/.local/share/pkgs/brave-bin
+                        rm -rf brave-bin
+                        cd ~/.local/pkgs
+                        ./xbps-src pkg brave-bin
+                        print_message "$(color green)brave-bin installed successfully!$(color reset)"
+                    fi
+                    if [ "$choice" = "floorp" ]; then
+                        sudo ./res/floorp/install.sh
+                        print_message "$(color green)floorp installed successfully!$(color reset)"
+                    fi
                 else
                     print_message "$(color red)Invalid package '$choice' selected.$(color reset)"
                 fi
@@ -469,6 +484,25 @@ setup_apps() {
     done
 
     print_message "$(color green)Applications setup completed!$(color reset)"
+}
+
+setup_vpkgs(){
+    print_message "$(color yellow)Setting up void repo\n$(color reset)"
+
+    dr=$(pwd)
+
+    git clone https://github.com/void-linux/void-packages.git --depth=1 ~/pkgs
+
+    mv ~/pkgs ~/.local/
+
+    cd ~/.local/pkgs
+    ./xbps-src binary-bootstrap
+    echo "XBPS_ALLOW_RESTRICTED=yes" >> ~/.local/pkgs/etc/conf
+
+    cd "$dr"
+
+    print_message "$(color green)void repo setup completed!$(color reset)"
+    clear
 }
 
 setup_displaymanager(){
