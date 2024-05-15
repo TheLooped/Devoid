@@ -73,4 +73,4 @@ bash devoid
 - [ ] Comprehensive User Documentation 📚
 
 ## License
-The Devoid Installer project is licensed under the MIT License.
+The Devoid Installer project is licensed under the MIT(LICENSE) License.
