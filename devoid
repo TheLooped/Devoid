@@ -1,6 +1,114 @@
 #!/usr/bin/env bash
 
 # Created by TheLooped
-# Description: A post installation script for Void Linux
+
+# Description: A installation script for Void Linux
+
+set -euo pipefail
+
+# Define color codes
+color() {
+    case "$1" in
+        red) echo -en "\033[1;91m";; # Errors or Warnings
+        yellow) echo -en "\033[1;93m";; # Pending actions
+        green) echo -en "\033[1;92m";; # Successful completion
+        blue) echo -en "\033[1;94m";; # Section headings
+        cyan) echo -en "\033[38;2;0;255;255m";; # Informational messages
+        magenta) echo -en "\033[38;5;207m";; # Program-specific messages (More vibrant magenta)
+        purple) echo -en "\033[38;5;141m";; # Prompts (Pastel purple)
+        orange) echo -en "\033[38;5;216m";; # Labels for data elements (More vibrant orange)
+        lavender) echo -en "\033[38;2;255;160;255m";; # Alt Informational messages
+        reset) echo -en "\033[0m";; # Reset to default text color
+        *) echo "Invalid color: $1" >&2; return 1;;
+    esac
+}
+
+# Print message with color
+print_message() {
+    local message="$1"
+    local color="$2"
+
+    if [ -n "$color" ]; then
+        echo -e "$(color "$color")$message$(color reset)"
+    else
+        echo -e "$message"
+    fi
+}
+
+# Handle errors
+judge() {
+    local script_name=$(basename "$0")
+    local line_number=$1
+    local error_message=$2
+    local exit_code=$?
+
+    print_message "${script_name} at line ${line_number}: ${error_message}" "blue" >&2
+
+    if [ -n "$exit_code" ]; then
+        print_message "Command exited with code ${exit_code}" "red" >&2
+    fi
+
+    exit ${exit_code:-1}  # Exit with the provided exit code or default to 1
+}
+
+# Set up error handling
+trap 'judge ${LINENO} "An error occurred."' ERR
+
+parse_input() {
+    local prompt="$1"
+    local expected_response="$2"
+    local color="purple"
+
+    while true; do
+        read -r -p "$(color "$color")$prompt $(color reset)" response
+        if [[ "$expected_response" =~ ^(y/n)$ ]]; then
+            if [[ "$response" =~ ^[yn]$ ]]; then
+                echo "$response"
+                return
+            else
+                print_message "Invalid response. Please enter y or n." "red"
+            fi
+        else
+            echo "$response"
+            return
+        fi
+    done
+}
+
+show_dev() {
+    # List all block devices, filtering out loopback and other non-partitionable devices
+    devices=$(lsblk -nd --output NAME,TYPE,SIZE | awk '$2 == "disk" {print $1 " (" $3 ")"}')
+    mapfile -t device_array <<< "$devices"
+
+    if [ ${#device_array[@]} -eq 0 ]; then
+        print_message "No partitionable devices found." "red"
+        exit 1
+    fi
+
+    print_message "Select a device:" "blue"
+    select device in "${device_array[@]}"; do
+        if [[ " ${device_array[*]} " == *" ${device} "* ]]; then
+            response=$(parse_input "You chose ${device}, is this correct? [y/n]" "y/n")
+            case $response in
+                y)
+                    read -r -p $(color cyan)"Press enter to continue"$(color reset)
+                    break
+                    ;;
+                n)
+                    clear
+                    show_dev
+                    return
+                    ;;
+            esac
+        else
+            print_message "Invalid selection" "red"
+            clear
+            show_dev
+        fi
+    done
+    clear
+}
 
 
+# Main script execution
+show_dev
