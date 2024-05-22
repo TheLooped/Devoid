@@ -75,6 +75,69 @@ parse_input() {
     done
 }
 
+get_total_ram() {
+    # Get total RAM in KB from /proc/meminfo and convert to GB
+    total_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    total_ram_gb=$((total_ram_kb / 1024 / 1024))
+    echo $total_ram_gb
+}
+
+calculate_swap_size() {
+    local total_ram_gb=$1
+
+    if (( total_ram_gb < 2 )); then
+        # If RAM is less than 2GB, use 2 times the RAM
+        swap_size_gb=$((total_ram_gb * 2))
+    elif (( total_ram_gb >= 2 && total_ram_gb <= 8 )); then
+        # If RAM is between 2GB and 8GB, use the same amount as RAM
+        swap_size_gb=$total_ram_gb
+    elif (( total_ram_gb > 8 && total_ram_gb <= 16 )); then
+        # If RAM is between 8GB and 16GB, use half the amount of RAM
+        swap_size_gb=$((total_ram_gb / 2))
+    elif (( total_ram_gb > 16 && total_ram_gb <= 64 )); then
+        # If RAM is between 16GB and 64GB, use 8GB of swap
+        swap_size_gb=8
+    else
+        # If RAM is more than 64GB, use 4GB of swap
+        swap_size_gb=4
+    fi
+
+    echo $swap_size_gb
+}
+
+calculate_remaining_storage() {
+    local total_size=$1
+    local boot_size=$2
+    local swap_size=$3
+    local root_size=$4
+    local home_size=$5
+
+    # Convert sizes to MiB if they are in different units (e.g., G for GiB)
+    total_size=$(convert_to_mib "$total_size")
+    boot_size=$(convert_to_mib "${boot_size:-512M}")
+    swap_size=$(convert_to_mib "${swap_size:-$calc_swap_size}")
+    root_size=$(convert_to_mib "$root_size")
+    home_size=$(convert_to_mib "$home_size")
+
+    # Calculate remaining storage in MiB
+    local used_size=$((boot_size + swap_size + root_size + home_size))
+    local remaining_size_mib=$((total_size - used_size))
+
+    # Convert remaining storage to GiB
+    local remaining_size_gb=$(echo "scale=2; $remaining_size_mib / 1024" | bc)
+
+    echo "Remaining storage after partitioning: ${remaining_size_gb}GiB"
+}
+
+convert_to_mib() {
+    local size=$1
+    case "$size" in
+        *G) echo $(( ${size%G} * 1024 )) ;;
+        *M) echo ${size%M} ;;
+        *) echo "$size" ;;  # Assume MiB if no unit is specified
+    esac
+}
+
 show_dev() {
     # List all block devices, filtering out loopback and other non-partitionable devices
     devices=$(lsblk -nd --output NAME,TYPE,SIZE | awk '$2 == "disk" {print $1 " (" $3 ")"}')
@@ -91,6 +154,8 @@ show_dev() {
             response=$(parse_input "You chose ${device}, is this correct? [y/n]" "y/n")
             case $response in
                 y)
+                    selected_device="${device%% (*}" # Remove the size part from the device string
+                    total_device_size=$(lsblk -bno SIZE /dev/"$selected_device" | awk '{print $1 / (1024 * 1024)}')M
                     read -r -p $(color cyan)"Press enter to continue"$(color reset)
                     break
                     ;;
@@ -109,6 +174,134 @@ show_dev() {
     clear
 }
 
+create_partition_btrfs() {
+    local device="$1"
+    print_message "Btrfs partitioning options:" "blue"
+    print_message "1. Btrfs with subvolumes" "orange"
+    print_message "2. Btrfs without subvolumes (standard partitioning)" "orange"
+
+    btrfs_option=$(parse_input "Select option (1 or 2):" "[12]")
+    case "$btrfs_option" in
+        1)
+            print_message "Creating Btrfs partitions with subvolumes on $device..." "green"
+            print_message "Please manually create the partitions using cfdisk." "cyan"
+            cfdisk /dev/"$device"
+            read -r -p $(color cyan)"Enter the partition you created (e.g., /dev/nvme0n1p1):"$(color reset) created_partition
+            print_message "Btrfs subvolume creation:" "blue"
+            read -r -p $(color cyan)"Enter the desired size for the boot subvolume (e.g., 512M):"$(color reset) boot_size
+            read -r -p $(color cyan)"Enter the desired size for the root subvolume (e.g., 20G):"$(color reset) root_size
+            # Add your logic for creating Btrfs subvolumes here
+            ;;
+        2)
+            print_message "Creating Btrfs partitions without subvolumes on $device..." "green"
+            print_message "Please manually create the partitions using cfdisk." "cyan"
+            cfdisk "$device"
+            read -r -p $(color cyan)"Enter the partition you created (e.g., /dev/nvme0n1p1):"$(color reset) created_partition
+            # Add your logic for creating Btrfs partitions without subvolumes here
+            ;;
+        *) print_message "Invalid option selected." "red"; return 1 ;;
+    esac
+}
+
+create_partition_standard() {
+    local device
+    local ram_size=$(get_total_ram)
+    local calc_swap_size=$(calculate_swap_size "$ram_size")
+    
+    print_message "File system options for standard partitioning:" "blue"
+    print_message "1. ext4" "orange"
+    print_message "2. btrfs (without subvolumes)" "orange"
+
+    fs_option=$(parse_input "Select option (1 or 2):" "[12]")
+    case "$fs_option" in
+        1)
+            print_message "Creating standard partitions with ext4 file system on $device..." "green"
+            print_message "Please manually create the partitions using cfdisk." "cyan"
+            cfdisk /dev/"$device"
+
+            read -r -p "$(color cyan)Enter the partition you created (e.g., /dev/nvme0n1p1):$(color reset) " created_partition
+            read -r -p "$(color cyan)Enter the desired size for the boot partition (default; 512M):$(color reset) " boot_size
+            read -r -p "$(color cyan)Enter the desired size for the swap partition (default is $calc_swap_size G):$(color reset) " swap_size
+
+            # Prompt for root partition size
+            read -r -p "$(color cyan)Do you want to create a home partition? (y/n):$(color reset) " create_home
+            if [[ "$create_home" == "y" ]]; then
+                read -r -p "$(color cyan)Enter the desired size for the home partition:$(color reset) " home_size
+                read -r -p "$(color cyan)Enter the desired size for the root partition (default will use remaining space):$(color reset) " root_size
+            else
+                home_size=0
+                read -r -p "$(color cyan)Enter the desired size for the root partition (default will use remaining space):$(color reset) " root_size
+            fi
+
+            # If root_size or home_size is not provided, calculate remaining size
+            if [[ -z "$root_size" ]]; then
+                used_size=$(convert_to_mib "${boot_size:-512M}")+$(convert_to_mib "${swap_size:-$calc_swap_size}")+$(convert_to_mib "${home_size:-0}")
+                root_size=$(( $(convert_to_mib "$total_device_size") - used_size ))
+                root_size="${root_size}M"
+            fi
+
+            calculate_remaining_storage "$total_device_size" "$boot_size" "$swap_size" "$root_size" "$home_size"
+            ;;
+        2)
+            print_message "Creating standard partitions with btrfs file system on $device..." "green"
+            print_message "Please manually create the partitions using cfdisk." "cyan"
+            cfdisk /dev/"$device"
+            read -r -p $(color cyan)"Enter the partition you created (e.g., /dev/nvme0n1p1):"$(color reset) created_partition
+            # Add your logic for creating btrfs partitions without subvolumes here
+            ;;
+        *) print_message "Invalid option selected." "red"; return 1 ;;
+    esac
+}
+
+partition_device() {
+    print_message "Please choose which partitioning method you would like to use:" "blue"
+    options=("Standard" "Btrfs")
+    select opt in "${options[@]}"; do
+        case "$opt" in
+            "Standard")
+                response=$(parse_input "You chose Standard partitioning, is this correct? [y/n]" "y/n")
+                case "$response" in
+                    y)
+                        create_partition_standard "$selected_device"
+                        break
+                        ;;
+                    n)
+                        print_message "Returning to partition method selection..." "cyan"
+                        sleep 0.6
+                        clear
+                        partition_device
+                        return
+                        ;;
+                esac
+                ;;
+            "Btrfs")
+                response=$(parse_input "You chose Btrfs partitioning, is this correct? [y/n]" "y/n")
+                case "$response" in
+                    y)
+                        print_message "Please manually select the unallocated space and create a new partition"
+                        create_partition_btrfs "$selected_device"
+                        break
+                        ;;
+                    n)
+                        print_message "Returning to partition method selection..." "cyan"
+                        sleep 0.6
+                        clear
+                        partition_device
+                        return
+                        ;;
+                esac
+                ;;
+            *)
+                print_message "Invalid selection" "red"
+                sleep 0.6 
+                clear
+                partition_device
+                return
+                ;;
+        esac
+    done
+}
 
 # Main script execution
 show_dev
+partition_device
